@@ -1,0 +1,84 @@
+name: Build & Release Manta Universal Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      manta_core_repo:
+        description: 'GitHub owner/repo for Manta Rust Core'
+        required: false
+        default: 'opentjcodes/Manta'
+
+permissions:
+  contents: write
+
+jobs:
+  build-manta-android:
+    runs-on: ubuntu-latest
+
+    env:
+      MANTA_CORE_REPO: ${{ github.event.inputs.manta_core_repo || 'opentjcodes/Manta' }}
+
+    steps:
+      - name: Checkout Manta Android Repository
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Fetch Prebuilt Manta Rust Core (or Compile Fallback)
+        run: |
+          chmod +x scripts/fetch-manta-core.sh
+          ./scripts/fetch-manta-core.sh "$MANTA_CORE_REPO"
+
+      - name: Ensure App Icon (logo.png) Exists in Drawable Resources
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi
+          if [ ! -f "logo.png" ]; then
+            # Generate a clean 64x64 Obsidian-Cyan PNG icon if logo.png was not attached
+            base64 -d << 'EOF' > logo.png
+          iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsTAAALEwEAmpwYAAAA
+          bklEQVR4nO3RsQ0AIAwDwYT9d2bAAa6k6p5L4M9c2wFAIBAIBAKBQCAQCAQCgUAgEAgEAoFAIBAI
+          BAKBQCAQCAQCe4N796x9t8H7AIFAIBAIBAKBQCAQCAQCgUAgEAgEAoFAIBAIBAKB4AJYygN978z9
+          MAAAAABJRU5ErkJggg==
+          EOF
+          fi
+          cp logo.png app/src/main/res/drawable-nodpi/logo.png
+
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build Universal R8-Minified Release & Debug APKs
+        run: gradle assembleRelease assembleDebug --no-daemon
+
+      - name: Upload Manta Universal Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Manta-Android-Release-APK
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Upload Manta Universal Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Manta-Android-Debug-APK
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Publish GitHub Release with Universal APKs
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v2.0.{0}', github.run_number) }}
+          name: "Manta Android Browser ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v2.0.{0}', github.run_number) }}"
+          generate_release_notes: true
+          files: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/debug/*.apk
