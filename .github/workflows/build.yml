@@ -42,23 +42,18 @@ jobs:
         run: |
           mkdir -p app/src/main/res/drawable-nodpi
           if [ ! -f "logo.png" ]; then
-            # Generate a clean 64x64 Obsidian-Cyan PNG icon if logo.png was not attached
-            base64 -d << 'EOF' > logo.png
-          iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsTAAALEwEAmpwYAAAA
-          bklEQVR4nO3RsQ0AIAwDwYT9d2bAAa6k6p5L4M9c2wFAIBAIBAKBQCAQCAQCgUAgEAgEAoFAIBAI
-          BAKBQCAQCAQCe4N796x9t8H7AIFAIBAIBAKBQCAQCAQCgUAgEAgEAoFAIBAIBAKB4AJYygN978z9
-          MAAAAABJRU5ErkJggg==
-          EOF
+            echo "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAbklEQVR4nO3RsQ0AIAwDwYT9d2bAAa6k6p5L4M9c2wFAIBAIBAKBQCAQCAQCgUAgEAgEAoFAIBAIBAKBQCAQCAQCe4N796x9t8H7AIFAIBAIBAKBQCAQCAQCgUAgEAgEAoFAIBAIBAKB4AJYygN978z9MAAAAABJRU5ErkJggg==" | base64 -d > logo.png
           fi
           cp logo.png app/src/main/res/drawable-nodpi/logo.png
 
-      - name: Set up Gradle 8.10.2
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.10.2'
-
-      - name: Build Universal R8-Minified Release & Debug APKs
-        run: gradle assembleRelease assembleDebug --no-daemon
+      - name: Install Gradle 8.10.2 & Build Universal Release + Debug APKs
+        run: |
+          if ! gradle --version 2>/dev/null | grep -q "8.10.2"; then
+            curl -fsSL https://services.gradle.org/distributions/gradle-8.10.2-bin.zip -o /tmp/gradle-8.10.2.zip
+            sudo unzip -q -o /tmp/gradle-8.10.2.zip -d /opt
+            export PATH="/opt/gradle-8.10.2/bin:$PATH"
+          fi
+          gradle assembleRelease assembleDebug --no-daemon
 
       - name: Upload Manta Universal Release APK Artifact
         uses: actions/upload-artifact@v4
