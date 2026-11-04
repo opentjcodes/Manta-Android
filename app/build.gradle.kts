@@ -1,12 +1,11 @@
 plugins {
-    id("com.android.application") version "8.5.2"
-    id("org.jetbrains.kotlin.android") version "2.0.20"
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 val syncRootLogo by tasks.registering(Copy::class) {
     from(rootProject.file("logo.png"))
     into(layout.projectDirectory.dir("src/main/res/drawable-nodpi"))
-    isIgnoreEmptyDirs = true
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
