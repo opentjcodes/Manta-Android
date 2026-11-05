@@ -38,12 +38,24 @@ jobs:
           chmod +x scripts/fetch-manta-core.sh
           ./scripts/fetch-manta-core.sh "$MANTA_CORE_REPO"
 
-      - name: Ensure App Icon (logo.png) Exists in Drawable Resources
+      - name: Sync Official logo.png from Manta Core Repository
         run: |
           mkdir -p app/src/main/res/drawable-nodpi
-          if [ ! -f "logo.png" ]; then
-            echo "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAbklEQVR4nO3RsQ0AIAwDwYT9d2bAAa6k6p5L4M9c2wFAIBAIBAKBQCAQCAQCgUAgEAgEAoFAIBAIBAKBQCAQCAQCe4N796x9t8H7AIFAIBAIBAKBQCAQCAQCgUAgEAgEAoFAIBAIBAKB4AJYygN978z9MAAAAABJRU5ErkJggg==" | base64 -d > logo.png
+          if ! file logo.png 2>/dev/null | grep -q "PNG image data"; then
+            curl -fsSL "https://raw.githubusercontent.com/${MANTA_CORE_REPO}/main/logo.png" -o logo.png || true
           fi
+          if ! file logo.png 2>/dev/null | grep -q "PNG image data"; then
+            python3 -c '
+          import struct, zlib
+          w, h = 128, 128
+          raw = b"".join(b"\x00" + b"\x09\x0a\x0f\xff" * w for _ in range(h))
+          def chunk(t, d):
+              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+          open("logo.png", "wb").write(png)
+          '
+          fi
+          file logo.png
           cp logo.png app/src/main/res/drawable-nodpi/logo.png
 
       - name: Install Gradle 8.10.2 & Build Universal Release + Debug APKs
