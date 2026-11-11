@@ -7,10 +7,12 @@ import android.view.View
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.Toast
 import app.manta.browser.core.DisplayListParser
 import app.manta.browser.core.MantaNative
 import app.manta.browser.core.MantaPreferences
+import app.manta.browser.ui.components.BraveTopBar
 import app.manta.browser.ui.components.FindInPageBar
 import app.manta.browser.ui.render.EphemeralWebSandbox
 import app.manta.browser.ui.render.MantaRenderView
@@ -20,11 +22,11 @@ import java.net.URL
 import kotlin.concurrent.thread
 
 /**
- * Full-Screen Edge-to-Edge Browser Viewport (`SearchBrowserScreen.kt`):
- * - Keeps up to 12 open tabs Hot-Active in RAM simultaneously so switching tabs is 0ms
- *   and never loses `<input>` text, scroll position, or JS state.
- * - Integrates Find-in-Page, Page Zoom, File Uploads (`<input type="file">`),
- *   File Downloads, Offline Page Saving, and Rust Reader Mode.
+ * Full-Screen Brave-Style Browser Viewport (`SearchBrowserScreen.kt`):
+ * - Features the always-accessible `BraveTopBar` (SSL Lock + Domain + Manta Shields `🛡` + Reload).
+ * - Keeps all open tabs 100% Hot-Active in RAM simultaneously (never killing open tabs!).
+ * - Supports HTML5 Fullscreen `<video>`, `<input type="file">` uploads, Find-in-Page,
+ *   Offline Page Saving, and Rust Reader Mode.
  */
 class SearchBrowserScreen(
     context: Context,
@@ -32,19 +34,24 @@ class SearchBrowserScreen(
     private val getActiveTabId: () -> Int,
     private val setActiveTabId: (Int) -> Unit,
     private val isDesktopModeEnabled: () -> Boolean,
-    private val onStateUpdated: (title: String, url: String, progress: Int) -> Unit,
+    private val onStateUpdated: (title: String, url: String, progress: Int, blockedCount: Int) -> Unit,
     private val onScrollDirectionChanged: (scrollingDown: Boolean) -> Unit,
     private val onOpenOmnibox: () -> Unit,
+    private val onOpenShieldsSheet: () -> Unit,
     private val onOpenVaultSettings: () -> Unit,
     private val onShowFilePicker: (ValueCallback<Array<Uri>>, WebChromeClient.FileChooserParams?) -> Boolean,
     private val onSecurityLog: (String) -> Unit
-) : FrameLayout(context) {
+) : LinearLayout(context) {
 
+    private val topBar: BraveTopBar
+    private val viewportFrame: FrameLayout
     private val startOverlay: HomeScreen
     private val rustRenderView: MantaRenderView
     private val findBar: FindInPageBar
+    private val fullscreenVideoContainer: FrameLayout
+    private var fullscreenCustomCallback: WebChromeClient.CustomViewCallback? = null
+
     private val tabSandboxes = HashMap<Int, EphemeralWebSandbox>()
-    private val maxHotActiveSandboxesInRam = 12
 
     private var useRustReaderMode: Boolean = false
     var currentUrl: String = "manta://start"
@@ -52,7 +59,27 @@ class SearchBrowserScreen(
     private var currentProgress: Int = 100
 
     init {
+        orientation = VERTICAL
         setBackgroundColor(MantaTheme.BG_OBSIDIAN)
+
+        // 1. Brave-Style Top Address & Shields Bar
+        topBar = BraveTopBar(
+            context = context,
+            onUrlBarClick = onOpenOmnibox,
+            onShieldsClick = onOpenShieldsSheet,
+            onReloadClick = { reloadCurrentPage() },
+            onHomeClick = { loadInputUrlOrQuery("manta://start", false) }
+        )
+        addView(
+            topBar,
+            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
+        )
+
+        // 2. Main Web & Home Viewport Frame
+        viewportFrame = FrameLayout(context).apply {
+            setBackgroundColor(MantaTheme.BG_OBSIDIAN)
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f)
+        }
 
         rustRenderView = MantaRenderView(
             context = context,
@@ -64,9 +91,12 @@ class SearchBrowserScreen(
         ).apply {
             visibility = View.GONE
         }
-        addView(
+        viewportFrame.addView(
             rustRenderView,
-            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
         )
 
         startOverlay = HomeScreen(
@@ -77,9 +107,12 @@ class SearchBrowserScreen(
             },
             onOpenVaultSettings = onOpenVaultSettings
         )
-        addView(
+        viewportFrame.addView(
             startOverlay,
-            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
         )
 
         findBar = FindInPageBar(
@@ -102,17 +135,35 @@ class SearchBrowserScreen(
                 tabSandboxes[getActiveTabId()]?.clearMatches()
             }
         )
-        val m = MantaTheme.dp(context, 14f)
-        addView(
+        val m = MantaTheme.dp(context, 12f)
+        viewportFrame.addView(
             findBar,
-            LayoutParams(
-                LayoutParams.MATCH_PARENT,
-                LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP
             ).apply {
-                setMargins(m, MantaTheme.dp(context, 16f), m, 0)
+                setMargins(m, m, m, 0)
             }
         )
+
+        fullscreenVideoContainer = FrameLayout(context).apply {
+            setBackgroundColor(0xFF000000.toInt())
+            visibility = View.GONE
+        }
+        viewportFrame.addView(
+            fullscreenVideoContainer,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        addView(viewportFrame)
+    }
+
+    fun getActiveTabBlockedCount(): Int {
+        return tabSandboxes[getActiveTabId()]?.blockedCountOnThisTab ?: 0
     }
 
     fun bootInitialPage() {
@@ -121,11 +172,18 @@ class SearchBrowserScreen(
 
     fun refreshHomepageDashboard() {
         startOverlay.refreshHomeDashboard()
+        topBar.updateTopBar(currentUrl, currentProgress, getActiveTabBlockedCount())
     }
 
     fun applyPreferencesToAllOpenSandboxes() {
         tabSandboxes.values.forEach { it.syncPreferencesToWebSettings() }
         startOverlay.refreshHomeDashboard()
+        topBar.updateTopBar(currentUrl, currentProgress, getActiveTabBlockedCount())
+    }
+
+    fun flushAllOpenTabsStorage() {
+        tabSandboxes.values.forEach { it.markBackgroundHotActive() }
+        MantaNative.flushCustomStorage()
     }
 
     private fun showStartOverlayForTab(tabId: Int) {
@@ -140,7 +198,8 @@ class SearchBrowserScreen(
         startOverlay.refreshHomeDashboard()
         startOverlay.visibility = View.VISIBLE
         onScrollDirectionChanged(false)
-        onStateUpdated("New Tab", "manta://start", 100)
+        topBar.updateTopBar("manta://start", 100, 0)
+        onStateUpdated("New Tab", "manta://start", 100, 0)
     }
 
     fun cycleTabByOffset(offset: Int) {
@@ -158,7 +217,7 @@ class SearchBrowserScreen(
         val previousId = getActiveTabId()
         if (previousId != targetTabId) {
             tabSandboxes[previousId]?.let { prevView ->
-                // Keep previous tab Hot-Active in RAM (do not pause or destroy its DOM!)
+                // Keep previous tab 100% Hot-Active in RAM (never destroy its DOM!)
                 prevView.markBackgroundHotActive()
                 prevView.visibility = View.GONE
             }
@@ -183,7 +242,9 @@ class SearchBrowserScreen(
             rustRenderView.visibility = View.GONE
             existingSandbox.visibility = View.VISIBLE
             existingSandbox.wakeToForeground()
-            onStateUpdated(tabInfo?.title ?: "Manta", targetUrl, 100)
+            val blocked = existingSandbox.blockedCountOnThisTab
+            topBar.updateTopBar(targetUrl, 100, blocked)
+            onStateUpdated(tabInfo?.title ?: "Manta", targetUrl, 100, blocked)
         } else {
             loadInputUrlOrQuery(targetUrl, useRustReaderMode)
         }
@@ -211,7 +272,7 @@ class SearchBrowserScreen(
     fun closeTabById(tabId: Int) {
         tabSandboxes.remove(tabId)?.let { sandbox ->
             sandbox.releaseTabResources()
-            removeView(sandbox)
+            viewportFrame.removeView(sandbox)
             sandbox.destroy()
         }
         MantaNative.closeTabAndZeroize(tabId)
@@ -300,7 +361,12 @@ class SearchBrowserScreen(
 
     fun reloadCurrentPage() {
         if (currentUrl != "manta://start") {
-            loadUrlInternal(currentUrl, forceReload = true)
+            val activeSandbox = tabSandboxes[getActiveTabId()]
+            if (activeSandbox != null && !useRustReaderMode) {
+                activeSandbox.reload()
+            } else {
+                loadUrlInternal(currentUrl, forceReload = true)
+            }
         } else {
             startOverlay.refreshHomeDashboard()
         }
@@ -309,7 +375,7 @@ class SearchBrowserScreen(
     fun wipeAllTabsAndSandboxes() {
         for ((_, sandbox) in tabSandboxes) {
             sandbox.wipeAllEphemeralData()
-            removeView(sandbox)
+            viewportFrame.removeView(sandbox)
             sandbox.destroy()
         }
         tabSandboxes.clear()
@@ -317,6 +383,13 @@ class SearchBrowserScreen(
     }
 
     fun handleBackNavigation(): Boolean {
+        if (fullscreenVideoContainer.visibility == View.VISIBLE) {
+            fullscreenCustomCallback?.onCustomViewHidden()
+            fullscreenVideoContainer.removeAllViews()
+            fullscreenVideoContainer.visibility = View.GONE
+            topBar.visibility = View.VISIBLE
+            return true
+        }
         if (findBar.visibility == View.VISIBLE) {
             findBar.hideBar()
             return true
@@ -342,17 +415,6 @@ class SearchBrowserScreen(
     private fun getOrCreateSandboxForTab(tabId: Int): EphemeralWebSandbox? {
         tabSandboxes[tabId]?.let { return it }
 
-        if (tabSandboxes.size >= maxHotActiveSandboxesInRam) {
-            val oldestId = tabSandboxes.keys.firstOrNull { it != tabId }
-            if (oldestId != null) {
-                tabSandboxes.remove(oldestId)?.let { oldView ->
-                    oldView.markBackgroundHotActive()
-                    removeView(oldView)
-                    oldView.destroy()
-                }
-            }
-        }
-
         return try {
             val created = EphemeralWebSandbox(
                 context = context,
@@ -365,22 +427,50 @@ class SearchBrowserScreen(
                     }
                     if (updatedTabId == getActiveTabId()) {
                         if (url.isNotBlank()) currentUrl = url
-                        onStateUpdated(title, currentUrl, currentProgress)
+                        val blocked = getActiveTabBlockedCount()
+                        topBar.updateTopBar(currentUrl, currentProgress, blocked)
+                        onStateUpdated(title, currentUrl, currentProgress, blocked)
                     }
                 },
                 onProgressUpdate = { updatedTabId, pct ->
                     if (updatedTabId == getActiveTabId()) {
                         currentProgress = pct
                         val activeTab = openTabs.find { it.id == updatedTabId }
-                        onStateUpdated(activeTab?.title ?: "Loading...", currentUrl, pct)
+                        val blocked = getActiveTabBlockedCount()
+                        topBar.updateTopBar(currentUrl, pct, blocked)
+                        onStateUpdated(activeTab?.title ?: "Loading...", currentUrl, pct, blocked)
                     }
                 },
                 onShowFilePicker = onShowFilePicker,
+                onEnterFullscreenVideo = { videoView, callback ->
+                    fullscreenCustomCallback = callback
+                    fullscreenVideoContainer.removeAllViews()
+                    fullscreenVideoContainer.addView(
+                        videoView,
+                        FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                    topBar.visibility = View.GONE
+                    fullscreenVideoContainer.visibility = View.VISIBLE
+                },
+                onExitFullscreenVideo = {
+                    fullscreenVideoContainer.removeAllViews()
+                    fullscreenVideoContainer.visibility = View.GONE
+                    topBar.visibility = View.VISIBLE
+                    fullscreenCustomCallback = null
+                },
                 onDownloadFinished = { fileName ->
                     startOverlay.refreshHomeDashboard()
                     Toast.makeText(context, "Saved to Manta Files: $fileName", Toast.LENGTH_SHORT).show()
                 },
-                onSecurityEvent = onSecurityLog
+                onTrackerOrThreatBlocked = { updatedTabId, detail ->
+                    onSecurityLog(detail)
+                    if (updatedTabId == getActiveTabId()) {
+                        topBar.updateTopBar(currentUrl, currentProgress, getActiveTabBlockedCount())
+                    }
+                }
             )
 
             created.setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
@@ -396,10 +486,13 @@ class SearchBrowserScreen(
                 }
             }
 
-            addView(
+            viewportFrame.addView(
                 created,
                 0,
-                LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
             )
             tabSandboxes[tabId] = created
             created
@@ -422,6 +515,7 @@ class SearchBrowserScreen(
         }
 
         currentUrl = verdict
+        topBar.updateTopBar(verdict, 15, getActiveTabBlockedCount())
 
         if (useRustReaderMode) {
             tabSandboxes.values.forEach { it.visibility = View.GONE }
@@ -451,7 +545,7 @@ class SearchBrowserScreen(
 
     private fun streamRemoteUrlViaRust(cleanUrl: String) {
         val tabId = getActiveTabId()
-        onStateUpdated("Reader Mode...", cleanUrl, 40)
+        onStateUpdated("Reader Mode...", cleanUrl, 40, getActiveTabBlockedCount())
 
         thread(start = true) {
             try {
@@ -481,7 +575,7 @@ class SearchBrowserScreen(
                 val parsed = DisplayListParser.parse(finalWire)
                 post {
                     rustRenderView.setFrame(parsed)
-                    onStateUpdated(parsed.title, cleanUrl, 100)
+                    onStateUpdated(parsed.title, cleanUrl, 100, getActiveTabBlockedCount())
                 }
             } catch (_: Throwable) {
                 post {

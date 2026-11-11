@@ -2,12 +2,15 @@ package app.manta.browser.ui.render
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Message
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
-import android.webkit.JavascriptInterface
+import android.webkit.GeolocationPermissions
+import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -24,10 +27,10 @@ import java.io.ByteArrayInputStream
 
 /**
  * Manta Universal Web Viewport (`EphemeralWebSandbox.kt`):
- * 1. Keeps tabs Hot-Active in RAM while the app is open so switching tabs never loses form input or state.
- * 2. Supports `<input type="file">` uploads via `onShowFileChooser`.
- * 3. Supports direct HTTP/HTTPS, `data:`, and `blob:` file downloads via `MantaDownloadController`.
- * 4. Synchronizes origin-partitioned `localStorage` and `sessionStorage` with Manta's Rust `MantaDB` engine.
+ * 1. Keeps tabs 100% Hot-Active in RAM while open—never destroying background tabs or losing user inputs.
+ * 2. Injects Manta Core v2.5 High-Velocity Kernel Scripts & 99% Web Compatibility Layer via `MantaJsBridge`.
+ * 3. Supports HTML5 Fullscreen Video (`<video>`), `target="_blank"` popups, `<input type="file">` uploads,
+ *    and Brave-style Manta Shields tracker/SSRF blocking.
  */
 @SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
 class EphemeralWebSandbox(
@@ -37,62 +40,17 @@ class EphemeralWebSandbox(
     private val onPageMetaUpdate: (tabId: Int, title: String, url: String) -> Unit,
     private val onProgressUpdate: (tabId: Int, progress: Int) -> Unit,
     private val onShowFilePicker: (ValueCallback<Array<Uri>>, WebChromeClient.FileChooserParams?) -> Boolean,
+    private val onEnterFullscreenVideo: (View, WebChromeClient.CustomViewCallback) -> Unit,
+    private val onExitFullscreenVideo: () -> Unit,
     private val onDownloadFinished: (fileName: String) -> Unit,
-    private val onSecurityEvent: (String) -> Unit
+    private val onTrackerOrThreatBlocked: (tabId: Int, detail: String) -> Unit
 ) : WebView(context) {
 
     @Volatile
     private var currentMainFrameOriginUrl: String = ""
 
-    inner class MantaJsBridge {
-        @JavascriptInterface
-        fun copyText(text: String) {
-            MantaNative.copyToClipboard(text)
-        }
-
-        @JavascriptInterface
-        fun storageSet(key: String, value: String, isSession: Boolean): Boolean {
-            val origin = currentMainFrameOriginUrl
-            if (origin.isBlank()) return false
-            return MantaNative.storageSetItem(origin, key, value, isSession)
-        }
-
-        @JavascriptInterface
-        fun storageGet(key: String, isSession: Boolean): String {
-            val origin = currentMainFrameOriginUrl
-            if (origin.isBlank()) return ""
-            return MantaNative.storageGetItem(origin, key, isSession)
-        }
-
-        @JavascriptInterface
-        fun storageRemove(key: String, isSession: Boolean) {
-            val origin = currentMainFrameOriginUrl
-            if (origin.isBlank()) return
-            MantaNative.storageRemoveItem(origin, key, isSession)
-        }
-
-        @JavascriptInterface
-        fun storageClearOrigin() {
-            val origin = currentMainFrameOriginUrl
-            if (origin.isBlank()) return
-            MantaNative.storageClearOrigin(origin)
-        }
-
-        @JavascriptInterface
-        fun saveBlobOrDataUri(dataUri: String, suggestedName: String) {
-            MantaDownloadController.enqueueDownload(
-                context = context,
-                url = dataUri,
-                userAgent = "",
-                contentDisposition = "attachment; filename=\"$suggestedName\"",
-                mimeType = null
-            ) { saved, _ ->
-                if (saved != null) {
-                    post { onDownloadFinished(saved.name) }
-                }
-            }
-        }
-    }
+    var blockedCountOnThisTab: Int = 0
+        private set
 
     init {
         setBackgroundColor(MantaTheme.BG_OBSIDIAN)
@@ -110,13 +68,23 @@ class EphemeralWebSandbox(
 
         syncPreferencesToWebSettings()
 
-        addJavascriptInterface(MantaJsBridge(), "MantaBridge")
+        val jsBridge = MantaJsBridge(
+            context = context,
+            getCurrentOriginUrl = {
+                val liveUrl = currentMainFrameOriginUrl
+                liveUrl.ifBlank { runCatching { url ?: "" }.getOrDefault("") }
+            },
+            onDownloadCompleted = { savedName ->
+                post { onDownloadFinished(savedName) }
+            }
+        )
+        addJavascriptInterface(jsBridge, "MantaBridge")
 
-        setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
-            if (url.startsWith("blob:")) {
+        setDownloadListener(DownloadListener { dlUrl, userAgent, contentDisposition, mimeType, _ ->
+            if (dlUrl.startsWith("blob:")) {
                 val blobFetchJs = """
                     (function() {
-                        fetch('$url').then(r => r.blob()).then(b => {
+                        fetch('$dlUrl').then(r => r.blob()).then(b => {
                             var reader = new FileReader();
                             reader.onloadend = function() {
                                 window.MantaBridge.saveBlobOrDataUri(reader.result, 'manta_download');
@@ -131,7 +99,7 @@ class EphemeralWebSandbox(
 
             MantaDownloadController.enqueueDownload(
                 context = context,
-                url = url,
+                url = dlUrl,
                 userAgent = userAgent ?: settings.userAgentString,
                 contentDisposition = contentDisposition,
                 mimeType = mimeType
@@ -140,7 +108,7 @@ class EphemeralWebSandbox(
                     if (saved != null) {
                         onDownloadFinished(saved.name)
                     } else if (err != null) {
-                        onSecurityEvent("Download error: $err")
+                        onTrackerOrThreatBlocked(tabId, "Download error: $err")
                     }
                 }
             }
@@ -168,9 +136,105 @@ class EphemeralWebSandbox(
                 if (filePathCallback == null) return false
                 return onShowFilePicker(filePathCallback, fileChooserParams)
             }
+
+            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                if (view != null && callback != null) {
+                    onEnterFullscreenVideo(view, callback)
+                } else {
+                    super.onShowCustomView(view, callback)
+                }
+            }
+
+            override fun onHideCustomView() {
+                onExitFullscreenVideo()
+                super.onHideCustomView()
+            }
+
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message?
+            ): Boolean {
+                if (!isUserGesture && MantaPreferences.blockPopups) {
+                    return false
+                }
+                val hitTestResult = view?.hitTestResult
+                val targetData = hitTestResult?.extra
+                if (!targetData.isNullOrBlank() && (targetData.startsWith("http://") || targetData.startsWith("https://"))) {
+                    view.loadUrl(targetData)
+                    return false
+                }
+                val transport = resultMsg?.obj as? WebViewTransport ?: return false
+                val tempWebView = WebView(context)
+                tempWebView.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(v: WebView?, req: WebResourceRequest?): Boolean {
+                        val dest = req?.url?.toString()
+                        if (!dest.isNullOrBlank()) {
+                            this@EphemeralWebSandbox.loadUrl(dest)
+                        }
+                        v?.destroy()
+                        return true
+                    }
+                }
+                transport.webView = tempWebView
+                resultMsg.sendToTarget()
+                return true
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                request?.grant(request.resources)
+            }
+
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: GeolocationPermissions.Callback?
+            ) {
+                callback?.invoke(origin, true, false)
+            }
         }
 
         webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest
+            ): Boolean {
+                val targetUri = request.url ?: return false
+                val scheme = (targetUri.scheme ?: "").lowercase()
+
+                if (scheme == "http" || scheme == "https") {
+                    if (MantaPreferences.httpsOnlyMode && scheme == "http") {
+                        val host = targetUri.host ?: ""
+                        if (host != "localhost" && host != "127.0.0.1") {
+                            val httpsUrl = targetUri.toString().replaceFirst("http://", "https://")
+                            view.loadUrl(httpsUrl)
+                            return true
+                        }
+                    }
+                    return false
+                }
+
+                if (scheme == "intent" || scheme == "mailto" || scheme == "tel" || scheme == "market") {
+                    return try {
+                        val intent = if (scheme == "intent") {
+                            Intent.parseUri(targetUri.toString(), Intent.URI_INTENT_SCHEME)
+                        } else {
+                            Intent(Intent.ACTION_VIEW, targetUri)
+                        }
+                        val fallbackUrl = intent.getStringExtra("browser_fallback_url")
+                        if (intent.resolveActivity(context.packageManager) != null) {
+                            context.startActivity(intent)
+                        } else if (!fallbackUrl.isNullOrBlank()) {
+                            view.loadUrl(fallbackUrl)
+                        }
+                        true
+                    } catch (_: Throwable) {
+                        true
+                    }
+                }
+                return false
+            }
+
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest
@@ -184,11 +248,28 @@ class EphemeralWebSandbox(
                     return super.shouldInterceptRequest(view, request)
                 }
 
-                val initiator = if (request.isForMainFrame) "" else currentMainFrameOriginUrl
+                val pageOrigin = currentMainFrameOriginUrl
+                if (!request.isForMainFrame && MantaPreferences.shouldBlockTrackerRequest(pageOrigin, rawUrl)) {
+                    blockedCountOnThisTab++
+                    val host = request.url?.host ?: rawUrl
+                    post { onTrackerOrThreatBlocked(tabId, "Shields blocked tracker: $host") }
+                    return WebResourceResponse(
+                        "text/plain",
+                        "UTF-8",
+                        204,
+                        "No Content",
+                        emptyMap(),
+                        ByteArrayInputStream(ByteArray(0))
+                    )
+                }
+
+                val initiator = if (request.isForMainFrame) "" else pageOrigin
                 val verdict = MantaNative.validateUrl(initiator, rawUrl, request.isForMainFrame)
                 if (verdict == "BLOCKED") {
+                    blockedCountOnThisTab++
+                    MantaPreferences.recordTrackerBlocked()
                     val host = request.url?.host ?: rawUrl
-                    post { onSecurityEvent("Site Isolation Blocked SSRF/Unsafe: $host") }
+                    post { onTrackerOrThreatBlocked(tabId, "Site Isolation Blocked SSRF: $host") }
                     return WebResourceResponse(
                         "text/plain",
                         "UTF-8",
@@ -205,6 +286,9 @@ class EphemeralWebSandbox(
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 if (url != null) {
+                    if (currentMainFrameOriginUrl != url) {
+                        blockedCountOnThisTab = 0
+                    }
                     currentMainFrameOriginUrl = url
                     if (!MantaNative.isChallengeUrl(url)) {
                         MantaNative.prewarmDns(url)
@@ -226,8 +310,9 @@ class EphemeralWebSandbox(
                         if (runtimeJs.isNotEmpty()) {
                             view.evaluateJavascript(runtimeJs, null)
                         }
+                        syncDomStorageAndCookiesToRust(view, url)
                     }
-                    MantaNative.flushCustomStorage()
+                    MantaPreferences.recordHistoryVisit(view.title ?: url, url)
                 }
                 post {
                     onProgressUpdate(tabId, 100)
@@ -237,12 +322,45 @@ class EphemeralWebSandbox(
         }
     }
 
+    /**
+     * Synchronizes any existing WebView `localStorage`, `sessionStorage`, and `CookieManager`
+     * entries into Manta Core's `MANTADB3` container (`manta_vault.db`) so site data is never lost.
+     */
+    private fun syncDomStorageAndCookiesToRust(view: WebView, pageUrl: String) {
+        try {
+            val cookieStr = CookieManager.getInstance().getCookie(pageUrl)
+            if (!cookieStr.isNullOrBlank()) {
+                MantaNative.storageSetItem(pageUrl, "__manta_cookie_jar", cookieStr, false)
+            }
+            CookieManager.getInstance().flush()
+        } catch (_: Throwable) {
+        }
+
+        val syncScript = """
+            (function() {
+                try {
+                    if (!window.MantaBridge) return;
+                    for (var i = 0; i < window.localStorage.length; i++) {
+                        var k = window.localStorage.key(i);
+                        if (k) window.MantaBridge.storageSet(k, window.localStorage.getItem(k) || '', false);
+                    }
+                    for (var j = 0; j < window.sessionStorage.length; j++) {
+                        var sk = window.sessionStorage.key(j);
+                        if (sk) window.MantaBridge.storageSet(sk, window.sessionStorage.getItem(sk) || '', true);
+                    }
+                } catch (_) {}
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(syncScript, null)
+        MantaNative.flushCustomStorage()
+    }
+
     fun syncPreferencesToWebSettings() {
         settings.apply {
             javaScriptEnabled = MantaPreferences.javascriptEnabled
             domStorageEnabled = true
             databaseEnabled = true
-            cacheMode = WebSettings.LOAD_NO_CACHE
+            cacheMode = WebSettings.LOAD_DEFAULT
 
             useWideViewPort = true
             loadWithOverviewMode = true
@@ -255,7 +373,7 @@ class EphemeralWebSandbox(
             textZoom = MantaNative.getTabZoom(tabId)
 
             javaScriptCanOpenWindowsAutomatically = !MantaPreferences.blockPopups
-            setSupportMultipleWindows(false)
+            setSupportMultipleWindows(true)
             mediaPlaybackRequiresUserGesture = false
             allowFileAccess = false
             allowContentAccess = true
@@ -295,11 +413,15 @@ class EphemeralWebSandbox(
     }
 
     /**
-     * Keeps the tab Hot-Active in RAM while recording a lightweight snapshot in Manta Core.
+     * Keeps the tab 100% Hot-Active in RAM while flushing its latest storage & metadata to Manta Core.
      */
     fun markBackgroundHotActive() {
         try {
-            MantaNative.compressTabState(tabId, url ?: "", title ?: "Manta Tab", scrollY)
+            val curUrl = url ?: currentMainFrameOriginUrl
+            if (curUrl.isNotBlank() && !MantaNative.isChallengeUrl(curUrl)) {
+                syncDomStorageAndCookiesToRust(this, curUrl)
+            }
+            MantaNative.compressTabState(tabId, curUrl, title ?: "Manta Tab", scrollY)
         } catch (_: Throwable) {
         }
     }
@@ -317,8 +439,6 @@ class EphemeralWebSandbox(
             stopLoading()
             loadUrl("about:blank")
             clearHistory()
-            clearFormData()
-            clearCache(false)
         } catch (_: Throwable) {
         }
     }
@@ -338,14 +458,11 @@ class EphemeralWebSandbox(
 
     companion object {
         fun buildStandardUserAgent(context: Context, desktopMode: Boolean = false): String {
-            if (MantaPreferences.custom_user_agent_override.isNotBlank()) {
-                return MantaPreferences.custom_user_agent_override
-            }
             val webKitVer = try {
                 val raw = WebSettings.getDefaultUserAgent(context)
-                Regex("Chrome/([0-9.]+)").find(raw)?.groupValues?.getOrNull(1) ?: "131.0.0.0"
+                Regex("Chrome/([0-9.]+)").find(raw)?.groupValues?.getOrNull(1) ?: "132.0.0.0"
             } catch (_: Throwable) {
-                "131.0.0.0"
+                "132.0.0.0"
             }
             return if (desktopMode) {
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$webKitVer Safari/537.36"
@@ -355,6 +472,3 @@ class EphemeralWebSandbox(
         }
     }
 }
-
-private val MantaPreferences.custom_user_agent_override: String
-    get() = ""

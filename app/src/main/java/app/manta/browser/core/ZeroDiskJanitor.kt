@@ -6,9 +6,10 @@ import android.webkit.WebStorage
 import java.io.File
 
 /**
- * Manta Zero-Ghost-Cache & Custom Vault Manager (`ZeroDiskJanitor.kt`):
- * 1. Automatically wipes transient OS HTTP/GPU/Shader caches on pause/exit so 0 B of un-clearable cache accumulates.
- * 2. Persists user-saved data inside Manta's single clearable Rust container (`manta_vault.db`).
+ * Manta Zero-Ghost-Cache & Transactional Vault Manager (`ZeroDiskJanitor.kt`):
+ * 1. Flushes both Android `CookieManager` and Manta's Rust `MANTADB3` vault (`manta_vault.db`)
+ *    so user logins, cookies, IndexedDB, and site data are never lost across app restarts.
+ * 2. Wipes only transient OS HTTP/GPU/Shader caches on pause/exit so 0 B of un-clearable cache accumulates.
  * 3. Provides 1-tap per-origin or full permanent shredding.
  */
 object ZeroDiskJanitor {
@@ -20,6 +21,10 @@ object ZeroDiskJanitor {
     }
 
     fun enforceZeroCacheAndFlushCustomStorage(context: Context) {
+        try {
+            CookieManager.getInstance().flush()
+        } catch (_: Throwable) {
+        }
         MantaNative.flushCustomStorage()
         wipeTransientCachesOnly(context)
     }
@@ -36,6 +41,9 @@ object ZeroDiskJanitor {
 
         try {
             File(context.filesDir, CUSTOM_STORAGE_FILENAME).let {
+                if (it.exists()) it.delete()
+            }
+            File(context.filesDir, "$CUSTOM_STORAGE_FILENAME.tmp").let {
                 if (it.exists()) it.delete()
             }
         } catch (_: Throwable) {

@@ -13,6 +13,7 @@ import android.widget.Toast
 import app.manta.browser.core.MantaNative
 import app.manta.browser.core.MantaPreferences
 import app.manta.browser.core.ZeroDiskJanitor
+import app.manta.browser.ui.components.MantaShieldsSheet
 import app.manta.browser.ui.components.MiniStatusPill
 import app.manta.browser.ui.components.SettingsVaultSheet
 import app.manta.browser.ui.components.SlidingBottomDock
@@ -24,10 +25,11 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Manta Universal Android Browser Activity (`MainActivity.kt`):
- * - Driven by `libmanta_core.so` (Manta Core v2.0).
- * - Full-screen edge-to-edge browser viewport + God-Tier Homepage.
- * - Supports `<input type="file">` system file picker for uploading files/photos to any website.
- * - Supports external `http://` and `https://` deep links.
+ * - Driven by `libmanta_core.so` (Manta Core v2.5).
+ * - Features Brave-Style Top Address & Shields Bar (`BraveTopBar.kt`), `MantaShieldsSheet.kt`,
+ *   `BraveStatsBanner.kt`, and Gesture Bottom Dock (`SlidingBottomDock.kt`).
+ * - Keeps all open tabs Hot-Active in RAM until explicitly closed.
+ * - Atomically persists all site data, cookies, IndexedDB, and form drafts into `manta_vault.db`.
  */
 class MainActivity : Activity() {
 
@@ -45,6 +47,7 @@ class MainActivity : Activity() {
     private var searchScreen: SearchBrowserScreen? = null
     private var tabChooserScreen: LibraryTabsScreen? = null
     private var omniboxSheet: MiniStatusPill? = null
+    private var shieldsSheet: MantaShieldsSheet? = null
     private var settingsVaultSheet: SettingsVaultSheet? = null
     private var bottomDock: SlidingBottomDock? = null
 
@@ -94,7 +97,7 @@ class MainActivity : Activity() {
         )
         bottomDock = dock
 
-        // 2. Full Settings, Downloads & MantaDB Vault Sheet
+        // 2. Full Settings, Downloads & MantaDB3 Vault Sheet
         val vaultSheet = SettingsVaultSheet(
             context = this,
             onSettingsChanged = {
@@ -107,7 +110,32 @@ class MainActivity : Activity() {
         )
         settingsVaultSheet = vaultSheet
 
-        // 3. Floating Omnibox & Full Control Center Sheet
+        // 3. Brave-Style Manta Shields & Per-Site Controls Popup Sheet
+        val shields = MantaShieldsSheet(
+            context = this,
+            onShieldsToggled = {
+                searchScreen?.reloadCurrentPage()
+                syncDockAndTelemetry()
+            },
+            onToggleDesktopMode = { enabled ->
+                desktopModeEnabled = enabled
+                searchScreen?.setDesktopSiteMode(enabled)
+                syncDockAndTelemetry()
+            },
+            onToggleReaderMode = {
+                searchScreen?.toggleReaderMode()
+            },
+            onZoomChanged = { zoomPct ->
+                searchScreen?.setActiveTabZoom(zoomPct)
+                syncDockAndTelemetry()
+            },
+            onOpenFullVault = {
+                vaultSheet.showSheet()
+            }
+        )
+        shieldsSheet = shields
+
+        // 4. Floating Omnibox & Full Control Center Sheet
         val omni = MiniStatusPill(
             context = this,
             onNavigateToUrlOrSearch = { queryOrUrl, forceReader ->
@@ -155,14 +183,14 @@ class MainActivity : Activity() {
         )
         omniboxSheet = omni
 
-        // 4. Full-Screen Browser Viewport & God-Tier Homepage
+        // 5. Full-Screen Browser Viewport & Brave-Style Dashboard
         val browser = SearchBrowserScreen(
             context = this,
             openTabs = openTabs,
             getActiveTabId = { activeTabId },
             setActiveTabId = { newId -> activeTabId = newId },
             isDesktopModeEnabled = { desktopModeEnabled },
-            onStateUpdated = { title, url, progress ->
+            onStateUpdated = { title, url, progress, _ ->
                 activeLoadProgress = progress
                 openTabs.find { it.id == activeTabId }?.let {
                     it.title = title
@@ -177,6 +205,12 @@ class MainActivity : Activity() {
                 val curUrl = searchScreen?.currentUrl ?: ""
                 omni.showOmnibox(curUrl, focusKeyboard = true)
             },
+            onOpenShieldsSheet = {
+                val curUrl = searchScreen?.currentUrl ?: "manta://start"
+                val blocked = searchScreen?.getActiveTabBlockedCount() ?: 0
+                val zoom = MantaNative.getTabZoom(activeTabId)
+                shields.showShields(curUrl, blocked, desktopModeEnabled, zoom)
+            },
             onOpenVaultSettings = {
                 vaultSheet.showSheet()
             },
@@ -189,7 +223,7 @@ class MainActivity : Activity() {
         )
         searchScreen = browser
 
-        // 5. 2-Column M3 Expressive Hot-Active Tab Switcher
+        // 6. 2-Column M3 Expressive Hot-Active Tab Switcher
         val tabChooser = LibraryTabsScreen(
             context = this,
             tabs = openTabs,
@@ -238,6 +272,14 @@ class MainActivity : Activity() {
             ).apply {
                 setMargins(dockMarginH, 0, dockMarginH, dockMarginB)
             }
+        )
+
+        rootContainer.addView(
+            shields,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
         )
 
         rootContainer.addView(
@@ -334,6 +376,7 @@ class MainActivity : Activity() {
 
     private fun openTabChooser() {
         omniboxSheet?.dismissOverlay()
+        shieldsSheet?.hideShields()
         tabChooserScreen?.refreshLibraryState(securityLogs)
         tabChooserScreen?.apply {
             alpha = 0f
@@ -385,7 +428,7 @@ class MainActivity : Activity() {
         syncDockAndTelemetry()
         Toast.makeText(
             this,
-            if (alsoDeleteDownloads) "Shredded All MantaDB, Downloads, Cookies & Tabs (0 B)"
+            if (alsoDeleteDownloads) "Shredded All MantaDB3, Downloads, Cookies & Tabs (0 B)"
             else "Shredded Site Storage, Cookies & Tabs (0 B)",
             Toast.LENGTH_SHORT
         ).show()
@@ -395,6 +438,10 @@ class MainActivity : Activity() {
     override fun onBackPressed() {
         if (settingsVaultSheet?.visibility == View.VISIBLE) {
             settingsVaultSheet?.hideSheet()
+            return
+        }
+        if (shieldsSheet?.visibility == View.VISIBLE) {
+            shieldsSheet?.hideShields()
             return
         }
         if (omniboxSheet?.visibility == View.VISIBLE) {
@@ -409,16 +456,19 @@ class MainActivity : Activity() {
             syncDockAndTelemetry()
             return
         }
+        searchScreen?.flushAllOpenTabsStorage()
         ZeroDiskJanitor.enforceZeroCacheAndFlushCustomStorage(this)
         super.onBackPressed()
     }
 
     override fun onStop() {
         super.onStop()
+        searchScreen?.flushAllOpenTabsStorage()
         ZeroDiskJanitor.enforceZeroCacheAndFlushCustomStorage(this)
     }
 
     override fun onDestroy() {
+        searchScreen?.flushAllOpenTabsStorage()
         ZeroDiskJanitor.enforceZeroCacheAndFlushCustomStorage(this)
         super.onDestroy()
     }

@@ -24,7 +24,7 @@
     @android.webkit.JavascriptInterface <methods>;
 }
 
--keep class app.manta.browser.ui.render.EphemeralWebSandbox$MantaJsBridge {
+-keep class app.manta.browser.ui.render.MantaJsBridge {
     *;
 }
 

@@ -15,6 +15,7 @@ import android.widget.Toast
 import app.manta.browser.core.MantaDownloadController
 import app.manta.browser.core.MantaNative
 import app.manta.browser.core.MantaPreferences
+import app.manta.browser.ui.components.BraveStatsBanner
 import app.manta.browser.ui.theme.MantaTheme
 import org.json.JSONObject
 
@@ -26,14 +27,11 @@ data class QuickLaunchSite(
 )
 
 /**
- * Manta God-Tier Homepage (`HomeScreen.kt`):
- * 1. Hero Brand & Live Manta Core v2.0 Telemetry Pulse Pill.
- * 2. Expressive Omnibox Search Bar with 1-Tap Search Engine Switcher (`G`, `DDG`, `B`, `SP`, `GH`).
- * 3. Customizable Squircle Speed-Dials Grid (+ Pin Custom Site button).
- * 4. 3-Tab Interactive Hub Deck right on the Homepage:
- *    - Tab 0: Pinned Bookmarks
- *    - Tab 1: Saved Files & Downloads (Open/Share or Delete)
- *    - Tab 2: Live MantaDB Site Storage Inspector (with 1-Tap Shred Site)
+ * Brave-Style Manta New Tab Dashboard (`HomeScreen.kt`):
+ * 1. Top `BraveStatsBanner` (Trackers Blocked, Engine RAM / MantaDB, Kernel Speedup).
+ * 2. Expressive Omnibox Search Bar with 1-Tap Search Engine Switcher (`B`, `G`, `DDG`, `SP`, `GH`).
+ * 3. Customizable 4-Column Speed-Dial Favorites Grid (+ Pin Site).
+ * 4. 4-Tab Activity Deck: Bookmarks | History | Saved Files | MantaDB3 Vault.
  */
 class HomeScreen(
     context: Context,
@@ -42,24 +40,24 @@ class HomeScreen(
     private val onOpenVaultSettings: () -> Unit
 ) : ScrollView(context) {
 
-    private val telemetryPill: TextView
+    private val statsBanner: BraveStatsBanner
     private val searchBadgeTv: TextView
     private val searchPromptTv: TextView
     private val speedDialGrid: GridLayout
     private val hubTabsRow: LinearLayout
     private val hubContentCol: LinearLayout
 
-    private var activeHubTab: Int = 0 // 0 = Bookmarks, 1 = Downloads, 2 = MantaDB Vault
+    private var activeHubTab: Int = 0 // 0 = Bookmarks, 1 = History, 2 = Files, 3 = MantaDB
 
     private val customDials = mutableListOf(
         QuickLaunchSite("Google", "https://www.google.com", MantaTheme.CONTAINER_PRIMARY, "G"),
-        QuickLaunchSite("GitHub", "https://github.com", MantaTheme.BG_CARD, "GH"),
+        QuickLaunchSite("Brave Search", "https://search.brave.com", MantaTheme.CONTAINER_TERTIARY, "B"),
         QuickLaunchSite("YouTube", "https://m.youtube.com", MantaTheme.CONTAINER_TERTIARY, "▶"),
-        QuickLaunchSite("DuckDuckGo", "https://duckduckgo.com", MantaTheme.CONTAINER_SECONDARY, "DDG"),
-        QuickLaunchSite("HackerNews", "https://news.ycombinator.com", MantaTheme.BG_CARD, "Y"),
+        QuickLaunchSite("GitHub", "https://github.com", MantaTheme.BG_CARD, "GH"),
+        QuickLaunchSite("Reddit", "https://www.reddit.com", MantaTheme.BG_CARD, "R"),
         QuickLaunchSite("Wikipedia", "https://www.wikipedia.org", MantaTheme.BG_CARD, "W"),
-        QuickLaunchSite("MDN Web", "https://developer.mozilla.org", MantaTheme.CONTAINER_PRIMARY, "MDN"),
-        QuickLaunchSite("+ Pin Site", "manta://pin", MantaTheme.BG_CONTAINER_HIGH, "+")
+        QuickLaunchSite("HackerNews", "https://news.ycombinator.com", MantaTheme.CONTAINER_SECONDARY, "Y"),
+        QuickLaunchSite("+ Add Site", "manta://pin", MantaTheme.BG_CONTAINER_HIGH, "+")
     )
 
     init {
@@ -70,55 +68,42 @@ class HomeScreen(
         val container = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            val padH = MantaTheme.dp(context, 20f)
-            setPadding(padH, MantaTheme.dp(context, 56f), padH, MantaTheme.dp(context, 120f))
+            val padH = MantaTheme.dp(context, 18f)
+            setPadding(padH, MantaTheme.dp(context, 22f), padH, MantaTheme.dp(context, 110f))
         }
 
-        // 1. Minimalist Hero Wordmark & Live Manta Core v2.0 Telemetry Pill
-        val logoBadge = TextView(context).apply {
-            text = "manta"
-            setTextColor(MantaTheme.TEXT_PRIMARY)
-            textSize = 38f
-            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-            letterSpacing = 0.10f
-            gravity = Gravity.CENTER
-        }
-        container.addView(logoBadge)
-
-        telemetryPill = TextView(context).apply {
-            val cores = MantaNative.getWorkerCoreCount()
-            text = "⚡ $cores Rust Cores • Hot-Active Tabs • MantaDB Ready"
-            setTextColor(MantaTheme.ACCENT_CYAN)
-            textSize = 11.5f
-            gravity = Gravity.CENTER
-            val pH = MantaTheme.dp(context, 14f)
-            val pV = MantaTheme.dp(context, 6f)
-            setPadding(pH, pV, pH, pV)
-            background = MantaTheme.roundedBg(MantaTheme.BG_SURFACE, 20f, context)
+        // 1. Brave-Style Privacy & Kernel Performance Stats Banner
+        statsBanner = BraveStatsBanner(context) {
+            onOpenVaultSettings()
+        }.apply {
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = MantaTheme.dp(context, 8f)
-                bottomMargin = MantaTheme.dp(context, 26f)
+                bottomMargin = MantaTheme.dp(context, 18f)
             }
-            setOnClickListener { onOpenVaultSettings() }
         }
-        container.addView(telemetryPill)
+        container.addView(statsBanner)
 
         // 2. Expressive Pill Search Bar with 1-Tap Search Engine Switcher
         val searchPill = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            val pH = MantaTheme.dp(context, 16f)
-            val pV = MantaTheme.dp(context, 14f)
+            val pH = MantaTheme.dp(context, 14f)
+            val pV = MantaTheme.dp(context, 12f)
             setPadding(pH, pV, pH, pV)
-            background = MantaTheme.roundedBg(MantaTheme.BG_CARD, 30f, context)
+            background = MantaTheme.roundedBg(
+                fillColor = MantaTheme.BG_CARD,
+                radiusDp = 26f,
+                context = context,
+                strokeColor = MantaTheme.BG_CONTAINER_HIGH,
+                strokeWidthDp = 1f
+            )
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = MantaTheme.dp(context, 28f)
+                bottomMargin = MantaTheme.dp(context, 22f)
             }
             setOnClickListener { onOpenOmniboxSearch() }
         }
@@ -127,10 +112,10 @@ class HomeScreen(
         searchBadgeTv = TextView(context).apply {
             text = currentEngine.badge
             setTextColor(MantaTheme.BG_OBSIDIAN)
-            textSize = 13f
+            textSize = 12.5f
             gravity = Gravity.CENTER
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            background = MantaTheme.roundedBg(MantaTheme.ACCENT_PRIMARY, 14f, context)
+            background = MantaTheme.roundedBg(MantaTheme.ACCENT_PRIMARY, 12f, context)
             val sH = MantaTheme.dp(context, 10f)
             val sV = MantaTheme.dp(context, 5f)
             setPadding(sH, sV, sH, sV)
@@ -143,16 +128,16 @@ class HomeScreen(
             setOnClickListener {
                 val next = MantaPreferences.cycleSearchEngine()
                 text = next.badge
-                searchPromptTv.text = "Search ${next.name} or type URL"
-                Toast.makeText(context, "Default Search: ${next.name}", Toast.LENGTH_SHORT).show()
+                searchPromptTv.text = "Search ${next.name} or type a URL"
+                Toast.makeText(context, "Search Engine: ${next.name}", Toast.LENGTH_SHORT).show()
             }
         }
         searchPill.addView(searchBadgeTv)
 
         searchPromptTv = TextView(context).apply {
-            text = "Search ${currentEngine.name} or type URL"
+            text = "Search ${currentEngine.name} or type a URL"
             setTextColor(MantaTheme.TEXT_SECONDARY)
-            textSize = 15f
+            textSize = 14.5f
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         searchPill.addView(searchPromptTv)
@@ -175,13 +160,13 @@ class HomeScreen(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = MantaTheme.dp(context, 22f)
+                bottomMargin = MantaTheme.dp(context, 18f)
             }
         }
         container.addView(speedDialGrid)
         renderSpeedDials()
 
-        // 4. Interactive 3-Tab Hub Deck (Bookmarks | Downloads & Files | MantaDB Vault)
+        // 4. Interactive 4-Tab Activity Hub (Bookmarks | History | Files | MantaDB)
         hubTabsRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             background = MantaTheme.roundedBg(MantaTheme.BG_SURFACE, 20f, context)
@@ -212,18 +197,8 @@ class HomeScreen(
     fun refreshHomeDashboard() {
         val eng = MantaPreferences.currentSearchEngine()
         searchBadgeTv.text = eng.badge
-        searchPromptTv.text = "Search ${eng.name} or type URL"
-
-        val cores = MantaNative.getWorkerCoreCount()
-        val ramKb = MantaNative.getEngineRamBytes() / 1024f
-        val dbKb = MantaNative.getCustomStorageBytes() / 1024f
-        telemetryPill.text = String.format(
-            "⚡ %d Rust Cores • %.1f KB RAM • %.1f KB MantaDB",
-            cores,
-            ramKb,
-            dbKb
-        )
-
+        searchPromptTv.text = "Search ${eng.name} or type a URL"
+        statsBanner.refreshStats()
         renderHubTabs()
         renderHubBody()
     }
@@ -234,8 +209,8 @@ class HomeScreen(
             val itemLayout = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
-                val pad = MantaTheme.dp(context, 6f)
-                setPadding(pad, pad, pad, MantaTheme.dp(context, 14f))
+                val pad = MantaTheme.dp(context, 5f)
+                setPadding(pad, pad, pad, MantaTheme.dp(context, 12f))
                 layoutParams = GridLayout.LayoutParams().apply {
                     width = 0
                     columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
@@ -247,6 +222,14 @@ class HomeScreen(
                         onLaunchUrl(dial.url, false)
                     }
                 }
+                setOnLongClickListener {
+                    if (dial.url != "manta://pin") {
+                        customDials.remove(dial)
+                        renderSpeedDials()
+                        Toast.makeText(context, "Removed ${dial.title}", Toast.LENGTH_SHORT).show()
+                    }
+                    true
+                }
             }
 
             val squircle = TextView(context).apply {
@@ -255,8 +238,8 @@ class HomeScreen(
                 textSize = 14f
                 typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
                 gravity = Gravity.CENTER
-                background = MantaTheme.roundedBg(dial.accentColor, 20f, context)
-                val s = MantaTheme.dp(context, 54f)
+                background = MantaTheme.roundedBg(dial.accentColor, 18f, context)
+                val s = MantaTheme.dp(context, 52f)
                 layoutParams = LinearLayout.LayoutParams(s, s)
             }
             itemLayout.addView(squircle)
@@ -272,7 +255,7 @@ class HomeScreen(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    topMargin = MantaTheme.dp(context, 6f)
+                    topMargin = MantaTheme.dp(context, 5f)
                 }
             }
             itemLayout.addView(label)
@@ -286,13 +269,13 @@ class HomeScreen(
             val p = MantaTheme.dp(context, 16f)
             setPadding(p, p, p, 0)
         }
-        val titleInput = EditText(context).apply { hint = "Site Title (e.g. Reddit)" }
-        val urlInput = EditText(context).apply { hint = "URL (e.g. https://reddit.com)" }
+        val titleInput = EditText(context).apply { hint = "Site Title (e.g. X)" }
+        val urlInput = EditText(context).apply { hint = "URL (e.g. https://x.com)" }
         box.addView(titleInput)
         box.addView(urlInput)
 
         AlertDialog.Builder(context)
-            .setTitle("Pin Site to Manta Home")
+            .setTitle("Add Speed Dial Site")
             .setView(box)
             .setPositiveButton("Pin") { _, _ ->
                 val t = titleInput.text.toString().trim()
@@ -314,20 +297,20 @@ class HomeScreen(
 
     private fun renderHubTabs() {
         hubTabsRow.removeAllViews()
-        val titles = listOf("★ Bookmarks", "⬇ Files & Saved", "🛡 MantaDB Vault")
+        val titles = listOf("★ Bookmarks", "🕒 History", "⬇ Files", "🛡 MantaDB")
         for ((idx, label) in titles.withIndex()) {
             val selected = idx == activeHubTab
             val tabBtn = TextView(context).apply {
                 text = label
                 setTextColor(if (selected) MantaTheme.ON_CONTAINER_PRIMARY else MantaTheme.TEXT_SECONDARY)
-                textSize = 12f
+                textSize = 11.5f
                 gravity = Gravity.CENTER
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                val pV = MantaTheme.dp(context, 9f)
-                setPadding(MantaTheme.dp(context, 6f), pV, MantaTheme.dp(context, 6f), pV)
+                val pV = MantaTheme.dp(context, 8f)
+                setPadding(MantaTheme.dp(context, 4f), pV, MantaTheme.dp(context, 4f), pV)
                 background = MantaTheme.roundedBg(
                     if (selected) MantaTheme.CONTAINER_PRIMARY else 0x00000000,
-                    16f,
+                    15f,
                     context
                 )
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -346,9 +329,9 @@ class HomeScreen(
             0 -> {
                 val bookmarks = MantaPreferences.getBookmarks()
                 if (bookmarks.isEmpty()) {
-                    hubContentCol.addView(makeEmptyState("No saved bookmarks yet. Tap ☆ Bookmark inside the Omnibox menu on any site."))
+                    hubContentCol.addView(makeEmptyState("No saved bookmarks yet. Tap ☆ inside the toolbar on any website to bookmark it."))
                 } else {
-                    for (bm in bookmarks.take(8)) {
+                    for (bm in bookmarks.take(10)) {
                         hubContentCol.addView(
                             makeHubItemCard(
                                 title = bm.title,
@@ -365,11 +348,32 @@ class HomeScreen(
                 }
             }
             1 -> {
+                val history = MantaPreferences.getHistory()
+                if (history.isEmpty()) {
+                    hubContentCol.addView(makeEmptyState("No recent browsing history."))
+                } else {
+                    for (h in history.take(10)) {
+                        hubContentCol.addView(
+                            makeHubItemCard(
+                                title = h.title,
+                                subtitle = h.url,
+                                actionLabel = "✕",
+                                onCardTap = { onLaunchUrl(h.url, false) },
+                                onActionTap = {
+                                    MantaPreferences.removeHistoryItem(h.url)
+                                    refreshHomeDashboard()
+                                }
+                            )
+                        )
+                    }
+                }
+            }
+            2 -> {
                 val files = MantaDownloadController.listSavedFiles(context)
                 if (files.isEmpty()) {
-                    hubContentCol.addView(makeEmptyState("No downloaded files or offline pages yet. Use '⬇ Save Page' or download any file."))
+                    hubContentCol.addView(makeEmptyState("No downloaded files or offline pages yet."))
                 } else {
-                    for (f in files.take(8)) {
+                    for (f in files.take(10)) {
                         hubContentCol.addView(
                             makeHubItemCard(
                                 title = f.name,
@@ -385,7 +389,7 @@ class HomeScreen(
                     }
                 }
             }
-            2 -> {
+            3 -> {
                 val manifestRaw = MantaNative.inspectStorageManifest()
                 var count = 0
                 try {
@@ -399,11 +403,13 @@ class HomeScreen(
                             count++
                             val bytes = o.optLong("used_bytes", 0L)
                             val kv = o.optInt("local_storage_keys", 0)
+                            val sess = o.optInt("session_storage_keys", 0)
                             val cookies = o.optInt("cookies", 0)
+                            val drafts = o.optInt("form_drafts", 0)
                             hubContentCol.addView(
                                 makeHubItemCard(
                                     title = origin,
-                                    subtitle = "${MantaDownloadController.formatBytes(bytes)} • $kv KV Keys • $cookies Cookies",
+                                    subtitle = "${MantaDownloadController.formatBytes(bytes)} • $kv KV • $sess Sess • $cookies Cookies • $drafts Drafts",
                                     actionLabel = "Shred",
                                     onCardTap = { onLaunchUrl(origin, false) },
                                     onActionTap = {
@@ -418,7 +424,7 @@ class HomeScreen(
                 } catch (_: Throwable) {
                 }
                 if (count == 0) {
-                    hubContentCol.addView(makeEmptyState("0 sites storing data in MantaDB. All site storage is origin-isolated and 1-tap clearable."))
+                    hubContentCol.addView(makeEmptyState("0 sites storing data in MantaDB3. All site data is persisted atomically and 1-tap clearable."))
                 }
             }
         }
@@ -434,9 +440,9 @@ class HomeScreen(
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            val p = MantaTheme.dp(context, 14f)
+            val p = MantaTheme.dp(context, 13f)
             setPadding(p, p, p, p)
-            background = MantaTheme.roundedBg(MantaTheme.BG_CARD, 20f, context)
+            background = MantaTheme.roundedBg(MantaTheme.BG_CARD, 18f, context)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -453,7 +459,7 @@ class HomeScreen(
         col.addView(TextView(context).apply {
             text = title
             setTextColor(MantaTheme.TEXT_PRIMARY)
-            textSize = 14f
+            textSize = 13.5f
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -470,11 +476,11 @@ class HomeScreen(
         val actBtn = TextView(context).apply {
             text = actionLabel
             setTextColor(MantaTheme.ON_CONTAINER_TERTIARY)
-            textSize = 11.5f
-            val pH = MantaTheme.dp(context, 12f)
+            textSize = 11f
+            val pH = MantaTheme.dp(context, 11f)
             val pV = MantaTheme.dp(context, 6f)
             setPadding(pH, pV, pH, pV)
-            background = MantaTheme.roundedBg(MantaTheme.CONTAINER_TERTIARY, 14f, context)
+            background = MantaTheme.roundedBg(MantaTheme.CONTAINER_TERTIARY, 13f, context)
             setOnClickListener { onActionTap() }
         }
         row.addView(actBtn)
@@ -487,9 +493,9 @@ class HomeScreen(
             setTextColor(MantaTheme.TEXT_MUTED)
             textSize = 12.5f
             gravity = Gravity.CENTER
-            val p = MantaTheme.dp(context, 20f)
+            val p = MantaTheme.dp(context, 18f)
             setPadding(p, p, p, p)
-            background = MantaTheme.roundedBg(MantaTheme.BG_SURFACE, 20f, context)
+            background = MantaTheme.roundedBg(MantaTheme.BG_SURFACE, 18f, context)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
