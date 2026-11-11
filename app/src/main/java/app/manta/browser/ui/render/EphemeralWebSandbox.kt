@@ -162,10 +162,10 @@ class EphemeralWebSandbox(
                 val hitTestResult = view?.hitTestResult
                 val targetData = hitTestResult?.extra
                 if (!targetData.isNullOrBlank() && (targetData.startsWith("http://") || targetData.startsWith("https://"))) {
-                    view.loadUrl(targetData)
+                    view?.loadUrl(targetData)
                     return false
                 }
-                val transport = resultMsg?.obj as? WebViewTransport ?: return false
+                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
                 val tempWebView = WebView(context)
                 tempWebView.webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(v: WebView?, req: WebResourceRequest?): Boolean {
@@ -322,10 +322,6 @@ class EphemeralWebSandbox(
         }
     }
 
-    /**
-     * Synchronizes any existing WebView `localStorage`, `sessionStorage`, and `CookieManager`
-     * entries into Manta Core's `MANTADB3` container (`manta_vault.db`) so site data is never lost.
-     */
     private fun syncDomStorageAndCookiesToRust(view: WebView, pageUrl: String) {
         try {
             val cookieStr = CookieManager.getInstance().getCookie(pageUrl)
@@ -412,9 +408,6 @@ class EphemeralWebSandbox(
         }
     }
 
-    /**
-     * Keeps the tab 100% Hot-Active in RAM while flushing its latest storage & metadata to Manta Core.
-     */
     fun markBackgroundHotActive() {
         try {
             val curUrl = url ?: currentMainFrameOriginUrl

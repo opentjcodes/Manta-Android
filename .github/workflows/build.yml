@@ -33,7 +33,23 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Fetch Prebuilt Manta Rust Core (or Compile Fallback)
+      - name: Locate Android NDK & Install Prebuilt cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Configure ANDROID_NDK_HOME
+        run: |
+          if [ -d "$ANDROID_HOME/ndk" ]; then
+            NDK_VER=$(ls -1 "$ANDROID_HOME/ndk" | sort -V | tail -n 1)
+          fi
+          if [ -z "$NDK_VER" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"
+            NDK_VER="27.2.12479018"
+          fi
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VER" >> $GITHUB_ENV
+
+      - name: Fetch Prebuilt Manta Rust Core (or Compile Latest v2.5 Fallback)
         run: |
           chmod +x scripts/fetch-manta-core.sh
           ./scripts/fetch-manta-core.sh "$MANTA_CORE_REPO"
@@ -83,8 +99,8 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v2.0.{0}', github.run_number) }}
-          name: "Manta Android Browser ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v2.0.{0}', github.run_number) }}"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v2.5.{0}', github.run_number) }}
+          name: "Manta Android Browser ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v2.5.{0}', github.run_number) }}"
           generate_release_notes: true
           files: |
             app/build/outputs/apk/release/*.apk
